@@ -69,6 +69,7 @@ describe('BlueWallet UI Tests - import BIP84 wallet', () => {
     await device.launchApp({ newInstance: true });
 
     // go inside the wallet
+    await waitForText('Imported HD SegWit (BIP84 Bech32 Native)');
     await element(by.text('Imported HD SegWit (BIP84 Bech32 Native)')).tap();
 
     // lets create real transaction:
@@ -195,6 +196,7 @@ describe('BlueWallet UI Tests - import BIP84 wallet', () => {
     await device.launchApp({ newInstance: true });
 
     // Go inside the wallet
+    await waitForText('Imported HD SegWit (BIP84 Bech32 Native)');
     await element(by.text('Imported HD SegWit (BIP84 Bech32 Native)')).tap();
     await waitForId('SendButton');
     await element(by.id('SendButton')).tap();
@@ -287,6 +289,7 @@ describe('BlueWallet UI Tests - import BIP84 wallet', () => {
     await device.launchApp({ newInstance: true });
 
     // go inside the wallet
+    await waitForText('Imported HD SegWit (BIP84 Bech32 Native)');
     await element(by.text('Imported HD SegWit (BIP84 Bech32 Native)')).tap();
     await waitForId('SendButton');
     await element(by.id('SendButton')).tap();
@@ -355,6 +358,7 @@ describe('BlueWallet UI Tests - import BIP84 wallet', () => {
     await device.launchApp({ newInstance: true });
 
     // go inside the wallet
+    await waitForText('Imported HD SegWit (BIP84 Bech32 Native)');
     await element(by.text('Imported HD SegWit (BIP84 Bech32 Native)')).tap();
     await waitForId('SendButton');
     await element(by.id('SendButton')).tap();
@@ -394,6 +398,7 @@ describe('BlueWallet UI Tests - import BIP84 wallet', () => {
     await device.launchApp({ newInstance: true });
 
     // go inside the wallet
+    await waitForText('Imported HD SegWit (BIP84 Bech32 Native)');
     await element(by.text('Imported HD SegWit (BIP84 Bech32 Native)')).tap();
     await element(by.id('WalletDetails')).tap();
 
@@ -528,6 +533,7 @@ describe('BlueWallet UI Tests - import BIP84 wallet', () => {
     await device.launchApp({ newInstance: true });
 
     // go inside the wallet
+    await waitForText('Imported HD SegWit (BIP84 Bech32 Native)');
     await element(by.text('Imported HD SegWit (BIP84 Bech32 Native)')).tap();
 
     // let's test wallet details screens
@@ -619,6 +625,7 @@ describe('BlueWallet UI Tests - import BIP84 wallet', () => {
 
     await device.launchApp({ newInstance: true });
     // go inside the wallet
+    await waitForText('Imported HD SegWit (BIP84 Bech32 Native)');
     await element(by.text('Imported HD SegWit (BIP84 Bech32 Native)')).tap();
 
     await waitFor(element(by.id('NoTxBuyBitcoin')))
@@ -741,6 +748,7 @@ describe('BlueWallet UI Tests - import BIP84 wallet', () => {
 
     await device.launchApp({ newInstance: true });
     // go inside the wallet
+    await waitForText('Imported HD SegWit (BIP84 Bech32 Native)');
     await element(by.text('Imported HD SegWit (BIP84 Bech32 Native)')).tap();
     await element(by.id('WalletDetails')).tap();
 
@@ -783,6 +791,7 @@ describe('BlueWallet UI Tests - import BIP84 wallet', () => {
 
     await device.launchApp({ newInstance: true });
     // go inside the wallet
+    await waitForText('Imported HD SegWit (BIP84 Bech32 Native)');
     await element(by.text('Imported HD SegWit (BIP84 Bech32 Native)')).tap();
     await element(by.id('WalletDetails')).tap();
 
