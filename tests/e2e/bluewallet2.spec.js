@@ -252,7 +252,7 @@ describe('BlueWallet UI Tests - import BIP84 wallet', () => {
 
     // Creating and verifying. tx should have 3 outputs
     await element(by.id('CreateTransactionButton')).tap();
-
+    await waitForId('TransactionDetailsButton');
     await element(by.id('TransactionDetailsButton')).tap();
     const txhex = await extractTextFromElementById('TxhexInput');
     const transaction = bitcoin.Transaction.fromHex(txhex);
@@ -404,7 +404,7 @@ describe('BlueWallet UI Tests - import BIP84 wallet', () => {
     // go to receive screen and check that payment code is there
     await waitForId('ReceiveButton');
     await element(by.id('ReceiveButton')).tap();
-    
+
     try {
       await element(by.text('ASK ME LATER.')).tap();
     } catch (_) {}
@@ -489,6 +489,7 @@ describe('BlueWallet UI Tests - import BIP84 wallet', () => {
     await element(by.id('feeCustom')).typeText('1');
     await element(by.id('feeCustom')).tapReturnKey();
     await element(by.id('CreateTransactionButton')).tap();
+    await waitForId('TransactionDetailsButton');
     await element(by.id('TransactionDetailsButton')).tap();
 
     const txhex1 = await extractTextFromElementById('TxhexInput');
@@ -670,6 +671,7 @@ describe('BlueWallet UI Tests - import BIP84 wallet', () => {
     await element(by.id('feeCustom')).typeText('1');
     await element(by.id('feeCustom')).tapReturnKey();
     await element(by.id('CreateTransactionButton')).tap();
+    await waitForId('TransactionDetailsButton');
     await element(by.id('TransactionDetailsButton')).tap();
 
     const txhex1 = await extractTextFromElementById('TxhexInput');
@@ -699,6 +701,7 @@ describe('BlueWallet UI Tests - import BIP84 wallet', () => {
     await element(by.id('feeCustom')).typeText('1');
     await element(by.id('feeCustom')).tapReturnKey();
     await element(by.id('CreateTransactionButton')).tap();
+    await waitForId('TransactionDetailsButton');
     await element(by.id('TransactionDetailsButton')).tap();
 
     const txhex2 = await extractTextFromElementById('TxhexInput');

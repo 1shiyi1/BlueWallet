@@ -602,6 +602,7 @@ describe('BlueWallet UI Tests - no wallets', () => {
     await sleep(1_000); // propagate
 
     await element(by.id('CreateTransactionButton')).tap();
+    await waitForId('TransactionDetailsButton');
 
     await waitFor(element(by.id('ItemUnsigned'))).toBeVisible();
     await waitFor(element(by.id('ItemSigned'))).toBeNotVisible(); // not a single green checkmark
