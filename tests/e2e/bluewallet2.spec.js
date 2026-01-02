@@ -576,6 +576,7 @@ describe('BlueWallet UI Tests - import BIP84 wallet', () => {
       newInstance: true,
       url: 'bitcoin:BC1QH6TF004TY7Z7UN2V5NTU4MKF630545GVHS45U7?amount=0.0001&label=Yo',
     });
+    await waitForId('chooseFee');
 
     // setting fee rate:
     const feeRate = 2;
@@ -648,6 +649,7 @@ describe('BlueWallet UI Tests - import BIP84 wallet', () => {
     await element(by.id('OutputMemo')).clearText();
     await element(by.id('OutputMemo')).typeText('test2');
     await element(by.id('OutputMemo')).tapReturnKey();
+    await sleep(200); // wait for keyboard to close
     if (device.getPlatform() === 'ios') {
       // FIXME. Add testId to freez switch
       await element(by.type('UISwitchModernVisualElement')).tap(); // freeze switch
