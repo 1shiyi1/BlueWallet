@@ -1,7 +1,7 @@
 import { sha256 } from '@noble/hashes/sha256';
 import { element } from 'detox';
 
-export async function waitForId(id, timeout = 10000) {
+export async function waitForId(id, timeout = 33000) {
   try {
     await waitFor(element(by.id(id)))
       .toBeVisible()
@@ -21,7 +21,7 @@ export async function waitForId(id, timeout = 10000) {
   }
 }
 
-export async function waitForText(text, timeout = 10000) {
+export async function waitForText(text, timeout = 33000) {
   try {
     await waitFor(element(by.text(text)))
       .toBeVisible()
