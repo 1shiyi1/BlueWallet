@@ -71,7 +71,7 @@ export async function helperImportWallet(importText, walletType, expectedWalletL
   if (passphrase) {
     await element(by.id('SpeedPassphraseInput')).replaceText(passphrase);
     await element(by.id('SpeedPassphraseInput')).tapReturnKey();
-    await sleep(200); // wait for keyboard to close
+    await waitForKeyboardToClose();
   }
   await element(by.id('SpeedDoImport')).tap();
 
@@ -278,4 +278,8 @@ export async function scrollUpOnHomeScreen() {
     await element(by.type('RCTCustomScrollView')).swipe('down', 'slow', 0.5);
   }
   await sleep(200); // bounce animation
+}
+
+export async function waitForKeyboardToClose() {
+  await sleep(500);
 }

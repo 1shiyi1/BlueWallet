@@ -16,6 +16,7 @@ import {
   tapIfPresent,
   tapIfTextPresent,
   waitForId,
+  waitForKeyboardToClose,
   waitForText,
 } from './helperz';
 
@@ -124,8 +125,10 @@ describe('BlueWallet UI Tests - no wallets', () => {
         .scroll(500, 'down'); // in case emu screen is small and it doesnt fit
       await element(by.id('HostInput')).replaceText('electrum.blockstream.info\n');
       await element(by.id('HostInput')).tapReturnKey();
+      await waitForKeyboardToClose();
       await element(by.id('PortInput')).replaceText('50001\n');
       await element(by.id('PortInput')).tapReturnKey();
+      await waitForKeyboardToClose();
       await waitFor(element(by.id('Save')))
         .toBeVisible()
         .whileElement(by.id('ElectrumSettingsScrollView'))
@@ -192,6 +195,7 @@ describe('BlueWallet UI Tests - no wallets', () => {
     // try to broadcast wrong tx
     await element(by.id('Broadcast')).tap();
     await element(by.id('TxHex')).replaceText('invalid\n');
+    await waitForKeyboardToClose();
     await element(by.id('BroadcastButton')).tap();
     await waitForText('OK');
     // await expect(element(by.text('the transaction was rejected by network rules....'))).toBeVisible();
@@ -243,6 +247,7 @@ describe('BlueWallet UI Tests - no wallets', () => {
     await element(by.id('BitcoinAmountInput')).replaceText('1');
     await element(by.id('CustomAmountDescription')).replaceText('test');
     await element(by.id('CustomAmountDescription')).tapReturnKey();
+    await waitForKeyboardToClose();
     await tapAndTapAgainIfElementIsNotVisible('CustomAmountSaveButton', 'CustomAmountDescriptionText');
     await expect(element(by.id('CustomAmountDescriptionText'))).toHaveText('test');
     await expect(element(by.id('BitcoinAmountText'))).toHaveText('1 BTC');
@@ -282,17 +287,21 @@ describe('BlueWallet UI Tests - no wallets', () => {
 
     await element(by.id('PasswordInput')).replaceText('08902');
     await element(by.id('PasswordInput')).tapReturnKey();
+    await waitForKeyboardToClose();
     await element(by.id('ConfirmPasswordInput')).replaceText('666');
     await element(by.id('ConfirmPasswordInput')).tapReturnKey();
+    await waitForKeyboardToClose();
     await element(by.id('OKButton')).tap();
 
     // now, lets put correct passwords and encrypt the storage
     await element(by.id('PasswordInput')).clearText();
     await element(by.id('PasswordInput')).replaceText('qqq');
     await element(by.id('PasswordInput')).tapReturnKey();
+    await waitForKeyboardToClose();
     await element(by.id('ConfirmPasswordInput')).clearText();
     await element(by.id('ConfirmPasswordInput')).replaceText('qqq');
     await element(by.id('ConfirmPasswordInput')).tapReturnKey();
+    await waitForKeyboardToClose();
     await element(by.id('OKButton')).tap();
     await tapIfPresent('OKButton'); // might not always work the first time
     await sleep(1000); // propagate
@@ -303,10 +312,12 @@ describe('BlueWallet UI Tests - no wallets', () => {
     // trying to decrypt with incorrect password
     await waitForId('PasswordInput');
     await element(by.id('PasswordInput')).typeText('wrong\n');
+    await waitForKeyboardToClose();
     await sleep(1000); // wait for shake animation and retry
 
     // correct password
     await element(by.id('PasswordInput')).typeText('qqq\n');
+    await waitForKeyboardToClose();
     await waitForId('WalletsList');
 
     // previously created wallet should be visible
@@ -328,8 +339,10 @@ describe('BlueWallet UI Tests - no wallets', () => {
     // trying MAIN password: should fail, obviously
     await element(by.id('PasswordInput')).replaceText('qqq');
     await element(by.id('PasswordInput')).tapReturnKey();
+    await waitForKeyboardToClose();
     await element(by.id('ConfirmPasswordInput')).replaceText('qqq');
     await element(by.id('ConfirmPasswordInput')).tapReturnKey();
+    await waitForKeyboardToClose();
     await element(by.id('OKButton')).tap();
     await tapIfPresent('OKButton'); // first time might not always work
     await sleep(1000); // propagate
@@ -340,18 +353,22 @@ describe('BlueWallet UI Tests - no wallets', () => {
     await element(by.id('PasswordInput')).clearText();
     await element(by.id('PasswordInput')).replaceText('passwordForFakeStorage');
     await element(by.id('PasswordInput')).tapReturnKey();
+    await waitForKeyboardToClose();
     await element(by.id('ConfirmPasswordInput')).clearText();
     await element(by.id('ConfirmPasswordInput')).replaceText('passwordForFakeStorageWithTypo'); // retyping with typo
     await element(by.id('ConfirmPasswordInput')).tapReturnKey();
+    await waitForKeyboardToClose();
     await element(by.id('OKButton')).tap();
 
     // trying new password
     await element(by.id('PasswordInput')).clearText();
     await element(by.id('PasswordInput')).replaceText('passwordForFakeStorage');
     await element(by.id('PasswordInput')).tapReturnKey();
+    await waitForKeyboardToClose();
     await element(by.id('ConfirmPasswordInput')).clearText();
     await element(by.id('ConfirmPasswordInput')).replaceText('passwordForFakeStorage'); // retyping
     await element(by.id('ConfirmPasswordInput')).tapReturnKey();
+    await waitForKeyboardToClose();
     await element(by.id('OKButton')).tap();
     await tapIfPresent('OKButton'); // first time might not always work
     await sleep(1000); // propagate
@@ -368,6 +385,7 @@ describe('BlueWallet UI Tests - no wallets', () => {
     //
     await waitForId('PasswordInput');
     await element(by.id('PasswordInput')).typeText('qqq\n');
+    await waitForKeyboardToClose();
     await waitForId('WalletsList');
 
     // previously created wallet IN MAIN STORAGE should be visible
@@ -378,6 +396,7 @@ describe('BlueWallet UI Tests - no wallets', () => {
     //
     await waitForId('PasswordInput');
     await element(by.id('PasswordInput')).typeText('passwordForFakeStorage\n');
+    await waitForKeyboardToClose();
     await waitForId('WalletsList');
 
     // previously created wallet in FAKE storage should be visible
@@ -392,6 +411,7 @@ describe('BlueWallet UI Tests - no wallets', () => {
     await element(by.text('OK')).tap();
     await element(by.id('PasswordInput')).replaceText('passwordForFakeStorage');
     await element(by.id('PasswordInput')).tapReturnKey();
+    await waitForKeyboardToClose();
     await element(by.id('OKButton')).tap();
     await tapIfPresent('OKButton'); // in case it didnt work first time
     await sleep(1000); // propagate
@@ -419,8 +439,10 @@ describe('BlueWallet UI Tests - no wallets', () => {
     await element(by.id('IUnderstandButton')).tap();
     await element(by.id('PasswordInput')).replaceText('pass');
     await element(by.id('PasswordInput')).tapReturnKey();
+    await waitForKeyboardToClose();
     await element(by.id('ConfirmPasswordInput')).replaceText('pass');
     await element(by.id('ConfirmPasswordInput')).tapReturnKey();
+    await waitForKeyboardToClose();
     await element(by.id('OKButton')).tap();
     await tapIfPresent('OKButton'); // might not always work first time
     await sleep(1000); // propagate
@@ -430,8 +452,10 @@ describe('BlueWallet UI Tests - no wallets', () => {
     await element(by.id('CreateFakeStorageButton')).tap();
     await element(by.id('PasswordInput')).replaceText('fake');
     await element(by.id('PasswordInput')).tapReturnKey();
+    await waitForKeyboardToClose();
     await element(by.id('ConfirmPasswordInput')).replaceText('fake'); // retyping
     await element(by.id('ConfirmPasswordInput')).tapReturnKey();
+    await waitForKeyboardToClose();
     await element(by.id('OKButton')).tap();
     await tapIfPresent('OKButton'); // might not always work first time
     if (device.getPlatform() === 'ios') {
@@ -449,6 +473,7 @@ describe('BlueWallet UI Tests - no wallets', () => {
     //
     await waitForId('PasswordInput');
     await element(by.id('PasswordInput')).typeText('pass\n');
+    await waitForKeyboardToClose();
     await waitForId('WalletsList');
 
     // previously created wallet IN MAIN STORAGE should be visible
@@ -463,6 +488,7 @@ describe('BlueWallet UI Tests - no wallets', () => {
     await element(by.text('OK')).tap();
     await element(by.id('PasswordInput')).replaceText('fake');
     await element(by.id('PasswordInput')).tapReturnKey();
+    await waitForKeyboardToClose();
     await element(by.id('OKButton')).tap();
     await tapIfPresent('OKButton'); // might not always work first time
     await sleep(1000); // propagate
@@ -470,6 +496,7 @@ describe('BlueWallet UI Tests - no wallets', () => {
     await element(by.id('PasswordInput')).clearText();
     await element(by.id('PasswordInput')).replaceText('pass');
     await element(by.id('PasswordInput')).tapReturnKey();
+    await waitForKeyboardToClose();
     await element(by.id('OKButton')).tap();
     await tapIfPresent('OKButton'); // might not always work first time
     await sleep(1000); // propagate
@@ -592,6 +619,7 @@ describe('BlueWallet UI Tests - no wallets', () => {
     await element(by.id('AddressInput')).replaceText('bc1q063ctu6jhe5k4v8ka99qac8rcm2tzjjnuktyrl');
     await element(by.id('BitcoinAmountInput')).typeText('0.0005');
     await element(by.id('BitcoinAmountInput')).tapReturnKey();
+    await waitForKeyboardToClose();
 
     // setting fee rate:
     const feeRate = 3;
@@ -599,7 +627,7 @@ describe('BlueWallet UI Tests - no wallets', () => {
     await element(by.id('feeCustomContainerButton')).tap();
     await element(by.id('feeCustom')).typeText(feeRate.toString());
     await element(by.id('feeCustom')).tapReturnKey();
-    await sleep(1_000); // propagate
+    await waitForKeyboardToClose();
 
     await element(by.id('CreateTransactionButton')).tap();
 
@@ -716,6 +744,7 @@ describe('BlueWallet UI Tests - no wallets', () => {
       // TODO: replace ’ with ' on ios
       await element(by.id('DerivationPathInput')).clearText();
       await element(by.id('DerivationPathInput')).typeText("m/44'/0'/1'\n");
+      await waitForKeyboardToClose();
       await waitFor(element(by.text('Found'))) // wait for discovery to be completed
         .toExist()
         .withTimeout(300 * 1000);
