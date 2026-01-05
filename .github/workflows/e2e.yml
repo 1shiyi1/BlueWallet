@@ -139,7 +139,7 @@ jobs:
 
       - name: Enable hardware keyboard
         run: |
-          SIM_NAME="$(node -p "require('.detoxrc.json').devices.simulator.device.type")"
+          SIM_NAME="$(node -p "require('./.detoxrc.json').devices.simulator.device.type")"
           echo "Detox simulator: $SIM_NAME"
 
           xcrun simctl shutdown all || true
@@ -171,7 +171,7 @@ jobs:
             --artifacts-location ./artifacts
 
       - uses: actions/upload-artifact@v4
-        # if: failure()
+        if: failure() || success()
         with:
           name: e2e-ios-videos
           path: ./artifacts/
@@ -266,7 +266,7 @@ jobs:
         script: npm run e2e:release-test -- --record-videos all --record-logs failing --take-screenshots failing --headless --reuse --artifacts-location /mnt/artifacts
 
     - uses: actions/upload-artifact@v4
-      # if: failure()
+      if: failure() || success()
       with:
         name: e2e-android-videos
         path: /mnt/artifacts/
