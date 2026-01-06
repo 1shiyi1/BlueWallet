@@ -137,29 +137,6 @@ jobs:
           brew tap wix/brew
           brew install applesimutils
 
-      - name: Enable hardware keyboard
-        run: |
-          SIM_NAME="$(node -p "require('./.detoxrc.json').devices.simulator.device.type")"
-          echo "Detox simulator: $SIM_NAME"
-
-          xcrun simctl shutdown all || true
-
-          UDID="$(xcrun simctl list devices available -j | node -e "
-            const j=JSON.parse(require('fs').readFileSync(0,'utf8'));
-            const name=process.env.SIM_NAME;
-            const devs=Object.values(j.devices).flat();
-            const d=devs.find(x => x.isAvailable && x.name === name);
-            if(!d){ console.error('Simulator not found:', name); process.exit(1); }
-            process.stdout.write(d.udid);
-          " SIM_NAME="$SIM_NAME")"
-
-          PLIST="$HOME/Library/Preferences/com.apple.iphonesimulator.plist"
-          /usr/libexec/PlistBuddy -c "Set :DevicePreferences:$UDID:ConnectHardwareKeyboard true" "$PLIST" \
-            || /usr/libexec/PlistBuddy -c "Add :DevicePreferences:$UDID:ConnectHardwareKeyboard bool true" "$PLIST"
-
-          killall Simulator || true
-          open -a Simulator || true
-
       - name: Run detox tests
         run: |
           npm run e2e:test:ios-release -- \

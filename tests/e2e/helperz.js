@@ -280,6 +280,12 @@ export async function scrollUpOnHomeScreen() {
   await sleep(200); // bounce animation
 }
 
+// We really only need this function when running tests locally.
+// In GitHub Actions, we run Android tests with a hardware keyboard, so the onscreen keyboard doesn’t appear.
+// On iOS, it doesn’t cause any known issues.
 export async function waitForKeyboardToClose() {
+  if (device.getPlatform() === 'ios' || process.env.CI) {
+    return;
+  }
   await sleep(500);
 }
