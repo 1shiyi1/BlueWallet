@@ -1,0 +1,138 @@
+name: Build iOS Unsigned IPA (BlueWallet)
+
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches:
+      - master
+      - main
+
+concurrency:
+  group: ios-unsigned-ipa-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  ios-unsigned-ipa:
+    runs-on: macos-14
+    timeout-minutes: 60
+
+    env:
+      CI: "true"
+      NPM_CONFIG_AUDIT: "false"
+      NPM_CONFIG_FUND: "false"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Setup Node.js (LTS even-numbered)
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install JS dependencies
+        shell: bash
+        run: |
+          set -euxo pipefail
+          if [ -f package-lock.json ]; then
+            npm ci
+          elif [ -f yarn.lock ]; then
+            corepack enable
+            yarn --version
+            yarn install --frozen-lockfile
+          else
+            npm install
+          fi
+
+      - name: Ensure CocoaPods available
+        shell: bash
+        run: |
+          set -euxo pipefail
+          if ! command -v pod >/dev/null 2>&1; then
+            sudo gem install cocoapods -N
+          fi
+          pod --version
+
+      - name: Install iOS Pods (per README)
+        shell: bash
+        run: |
+          set -euxo pipefail
+          npx pod-install
+        # README 提到 iOS 需要 npx pod-install :contentReference[oaicite:1]{index=1}
+
+      - name: Build iOS .app (NO signing)
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          # BlueWallet README 提示用 ios/BlueWallet.xcworkspace 且 scheme/target 是 BlueWallet :contentReference[oaicite:2]{index=2}
+          WORKSPACE="$(ls -1 ios/*.xcworkspace | head -n 1)"
+          echo "WORKSPACE=$WORKSPACE"
+
+          # 优先用 README 的 scheme：BlueWallet；如果不匹配，就从 xcodebuild -list 里兜底取第一个
+          SCHEME="BlueWallet"
+          if ! xcodebuild -list -workspace "$WORKSPACE" | grep -q "Schemes:"; then
+            echo "xcodebuild -list failed"
+            xcodebuild -list -workspace "$WORKSPACE"
+          fi
+          if ! xcodebuild -list -workspace "$WORKSPACE" | sed -n '/Schemes:/,$p' | grep -q "^\s*$SCHEME$"; then
+            echo "Scheme '$SCHEME' not found. Falling back to first scheme in workspace..."
+            SCHEME="$(xcodebuild -list -workspace "$WORKSPACE" | sed -n '/Schemes:/,$p' | awk 'NF{print $0}' | tail -n +2 | head -n 1 | sed 's/^\s*//g')"
+          fi
+          echo "SCHEME=$SCHEME"
+
+          rm -rf build
+          mkdir -p build
+
+          # 直接 build Release-iphoneos 的 .app，并彻底关掉 codesign
+          xcodebuild \
+            -workspace "$WORKSPACE" \
+            -scheme "$SCHEME" \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination "generic/platform=iOS" \
+            -derivedDataPath build/DerivedData \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            DEVELOPMENT_TEAM="" \
+            PROVISIONING_PROFILE_SPECIFIER="" \
+            build
+
+      - name: Package unsigned .ipa (Payload/*.app)
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          APP_PATH="$(find build/DerivedData/Build/Products -maxdepth 3 -type d -name '*.app' -path '*Release-iphoneos*' | head -n 1)"
+          if [ -z "$APP_PATH" ] || [ ! -d "$APP_PATH" ]; then
+            echo "Could not find built .app under build/DerivedData/Build/Products"
+            find build/DerivedData/Build/Products -maxdepth 4 -type d -name '*.app' -print || true
+            exit 1
+          fi
+
+          echo "APP_PATH=$APP_PATH"
+          rm -rf Payload
+          mkdir -p Payload
+          cp -R "$APP_PATH" Payload/
+
+          IPA_NAME="bluewallet-unsigned.ipa"
+          rm -f "$IPA_NAME"
+          /usr/bin/zip -r "$IPA_NAME" Payload
+
+          echo "Created $IPA_NAME"
+          ls -lah "$IPA_NAME"
+
+      - name: Upload unsigned ipa artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bluewallet-ios-unsigned-ipa
+          path: bluewallet-unsigned.ipa
+          if-no-files-found: error
