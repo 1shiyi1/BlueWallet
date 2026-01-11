@@ -24,14 +24,8 @@ jobs:
         run: |
           npx pod-install
 
-      - name: Print schemes (for troubleshooting)
-        run: |
-          xcodebuild -list -workspace ios/BlueWallet.xcworkspace
-
-      # ✅ 关键修复：把 watchOS storyboard 从 iOS App target 的 Resources 里移除
-      # 原因：watchOS storyboard 被当成 iOS storyboard 编译，触发
-      # "watchOS storyboards do not support target device type iphone"
-      - name: Patch Xcode project (exclude watch storyboard from iOS resources)
+      # ✅ 关键：生成一个只编 iOS App 的 Scheme，避免 Watch 目标（BlueWalletWatch）参与构建
+      - name: Create iOS-only scheme (exclude Watch/Extensions)
         run: |
           python3 <<'PY'
           import re, pathlib, sys
@@ -39,22 +33,102 @@ jobs:
           pbx = pathlib.Path("ios/BlueWallet.xcodeproj/project.pbxproj")
           s = pbx.read_text()
 
-          # 1) 找到名为 BlueWallet 的 PBXNativeTarget
-          m = re.search(r'([A-F0-9]{24}) /\* BlueWallet \*/ = \{.*?isa = PBXNativeTarget;.*?name = BlueWallet;.*?\};',
-                        s, re.S)
+          # 找到 iOS 主 App Target: BlueWallet 的 target id
+          m = re.search(r'([A-F0-9]{24}) /\* BlueWallet \*/ = \{.*?isa = PBXNativeTarget;.*?name = BlueWallet;.*?\};', s, re.S)
+          if not m:
+            print("ERROR: Cannot find PBXNativeTarget named 'BlueWallet'", file=sys.stderr)
+            sys.exit(1)
+
+          target_id = m.group(1)
+
+          # 找到它的 productName / productRef，尽量推断 BuildableName
+          # 兜底就用 BlueWallet.app
+          buildable_name = "BlueWallet.app"
+
+          scheme_dir = pathlib.Path("ios/BlueWallet.xcodeproj/xcshareddata/xcschemes")
+          scheme_dir.mkdir(parents=True, exist_ok=True)
+
+          scheme_path = scheme_dir / "BlueWallet-iOSOnly.xcscheme"
+
+          scheme_xml = f'''<?xml version="1.0" encoding="UTF-8"?>
+          <Scheme
+             LastUpgradeVersion="9999"
+             version="1.7">
+             <BuildAction parallelizeBuildables="YES" buildImplicitDependencies="NO">
+                <BuildActionEntries>
+                   <BuildActionEntry buildForTesting="YES" buildForRunning="YES" buildForProfiling="YES" buildForArchiving="YES" buildForAnalyzing="YES">
+                      <BuildableReference
+                         BuildableIdentifier="primary"
+                         BlueprintIdentifier="{target_id}"
+                         BuildableName="{buildable_name}"
+                         BlueprintName="BlueWallet"
+                         ReferencedContainer="container:BlueWallet.xcodeproj">
+                      </BuildableReference>
+                   </BuildActionEntry>
+                </BuildActionEntries>
+             </BuildAction>
+             <TestAction buildConfiguration="Release" selectedDebuggerIdentifier="Xcode.DebuggerFoundation.Debugger.LLDB" selectedLauncherIdentifier="Xcode.DebuggerFoundation.Launcher.LLDB">
+             </TestAction>
+             <LaunchAction buildConfiguration="Release" selectedDebuggerIdentifier="Xcode.DebuggerFoundation.Debugger.LLDB" selectedLauncherIdentifier="Xcode.DebuggerFoundation.Launcher.LLDB" launchStyle="0" useCustomWorkingDirectory="NO" ignoresPersistentStateOnLaunch="NO" debugDocumentVersioning="YES">
+                <BuildableProductRunnable runnableDebuggingMode="0">
+                   <BuildableReference
+                      BuildableIdentifier="primary"
+                      BlueprintIdentifier="{target_id}"
+                      BuildableName="{buildable_name}"
+                      BlueprintName="BlueWallet"
+                      ReferencedContainer="container:BlueWallet.xcodeproj">
+                   </BuildableReference>
+                </BuildableProductRunnable>
+             </LaunchAction>
+             <ProfileAction buildConfiguration="Release" shouldUseLaunchSchemeArgsEnv="YES" savedToolIdentifier="" useCustomWorkingDirectory="NO" debugDocumentVersioning="YES">
+                <BuildableProductRunnable runnableDebuggingMode="0">
+                   <BuildableReference
+                      BuildableIdentifier="primary"
+                      BlueprintIdentifier="{target_id}"
+                      BuildableName="{buildable_name}"
+                      BlueprintName="BlueWallet"
+                      ReferencedContainer="container:BlueWallet.xcodeproj">
+                   </BuildableReference>
+                </BuildableProductRunnable>
+             </ProfileAction>
+             <AnalyzeAction buildConfiguration="Release">
+             </AnalyzeAction>
+             <ArchiveAction buildConfiguration="Release" revealArchiveInOrganizer="YES">
+             </ArchiveAction>
+          </Scheme>
+          '''
+
+          scheme_path.write_text(scheme_xml)
+          print(f"Created scheme: {scheme_path} (target id {target_id})")
+          PY
+
+      - name: Print schemes (for troubleshooting)
+        run: |
+          xcodebuild -list -workspace ios/BlueWallet.xcworkspace
+
+      # 1) 修复：watchOS storyboard 不应被 iOS target 当资源编译（你之前遇到的那个）
+      # 2) 加固：禁用 Bugsnag 上传脚本 phase（CI 缺 token 时常见炸点）
+      - name: Patch Xcode project (watch storyboard + disable Bugsnag upload scripts)
+        run: |
+          python3 <<'PY'
+          import re, pathlib, sys
+
+          pbx = pathlib.Path("ios/BlueWallet.xcodeproj/project.pbxproj")
+          s = pbx.read_text()
+
+          # ---------- A) Remove watch storyboard from iOS target Resources ----------
+          m = re.search(r'([A-F0-9]{24}) /\* BlueWallet \*/ = \{.*?isa = PBXNativeTarget;.*?name = BlueWallet;.*?\};', s, re.S)
           if not m:
             print("ERROR: Cannot find PBXNativeTarget named 'BlueWallet'", file=sys.stderr)
             sys.exit(1)
           target_block = m.group(0)
 
-          # 2) 找出这个 target 的 buildPhases ids
           bm = re.search(r'buildPhases = \((.*?)\);', target_block, re.S)
           if not bm:
             print("ERROR: Cannot find buildPhases for target 'BlueWallet'", file=sys.stderr)
             sys.exit(1)
           phase_ids = re.findall(r'([A-F0-9]{24})', bm.group(1))
 
-          # 3) 在这些 phase 里定位 PBXResourcesBuildPhase（iOS app 的 Resources phase）
           res_phase_id = None
           for pid in phase_ids:
             pm = re.search(rf'{pid} /\* .*? \*/ = \{{.*?isa = PBXResourcesBuildPhase;.*?\}};', s, re.S)
@@ -65,7 +139,6 @@ jobs:
             print("ERROR: Cannot find PBXResourcesBuildPhase for target 'BlueWallet'", file=sys.stderr)
             sys.exit(1)
 
-          # 4) 把 Resources phase 的 files 列表拿出来
           phase_pat = rf'({res_phase_id} /\* .*? \*/ = \{{.*?isa = PBXResourcesBuildPhase;.*?files = \((.*?)\);.*?\}};)'
           pm = re.search(phase_pat, s, re.S)
           if not pm:
@@ -75,7 +148,6 @@ jobs:
           phase_full = pm.group(1)
           files_block = pm.group(2)
 
-          # 5) files 列表里每个是 PBXBuildFile id，我们找出其中指向 BlueWalletWatch/.../Interface.storyboard 的
           file_ids = re.findall(r'([A-F0-9]{24}) /\* .*? \*/', files_block)
 
           watch_build_file_ids = set()
@@ -86,50 +158,62 @@ jobs:
             )
             if not bm:
               continue
-
             build_comment = bm.group(1)
             fileref_id = bm.group(2)
 
-            # 只处理 Interface.storyboard 相关
             if "Interface.storyboard" not in build_comment:
               continue
 
-            # 从 PBXFileReference 找 path，判断是否在 BlueWalletWatch 目录
-            frm = re.search(rf'{fileref_id} /\* .*? \*/ = \{{.*?isa = PBXFileReference;.*?path = ([^;]+);',
-                            s, re.S)
+            frm = re.search(rf'{fileref_id} /\* .*? \*/ = \{{.*?isa = PBXFileReference;.*?path = ([^;]+);', s, re.S)
             if frm and "BlueWalletWatch" in frm.group(1):
               watch_build_file_ids.add(fid)
 
-          if not watch_build_file_ids:
-            print("No watch storyboard resource entries found in iOS Resources phase. Nothing to patch.")
-            sys.exit(0)
+          if watch_build_file_ids:
+            new_files_block = files_block
+            for fid in watch_build_file_ids:
+              new_files_block = re.sub(rf'\n\s*{fid} /\* .*? \*/,', '', new_files_block)
+            new_phase_full = phase_full.replace(files_block, new_files_block)
+            s = s.replace(phase_full, new_phase_full)
+            print(f"Patched: removed {len(watch_build_file_ids)} watch storyboard entries from iOS Resources.")
+          else:
+            print("Patch: no watch storyboard entries found in iOS Resources (skip).")
 
-          new_files_block = files_block
-          for fid in watch_build_file_ids:
-            new_files_block = re.sub(rf'\n\s*{fid} /\* .*? \*/,', '', new_files_block)
+          # ---------- B) Disable Bugsnag upload script phases ----------
+          script_names = [
+            "Upload source maps to Bugsnag",
+            "Upload Bugsnag dSYM",
+          ]
+          changed = 0
+          for name in script_names:
+            pattern = rf'([A-F0-9]{{24}} /\* {re.escape(name)} \*/ = \{{.*?isa = PBXShellScriptBuildPhase;.*?shellScript = )(".*?")(\s*;.*?\}};)'
+            def repl(m):
+              nonlocal changed
+              changed += 1
+              return m.group(1) + '"exit 0\\n"' + m.group(3)
+            s, _ = re.subn(pattern, repl, s, flags=re.S)
 
-          new_phase_full = phase_full.replace(files_block, new_files_block)
-          s2 = s.replace(phase_full, new_phase_full)
-          pbx.write_text(s2)
+          print(f"Patched: disabled {changed} Bugsnag upload script phase(s).")
 
-          print(f"Patched OK: removed {len(watch_build_file_ids)} watch storyboard resource entries from iOS target Resources.")
+          pbx.write_text(s)
           PY
 
-      # 归档：禁用签名 + 指定 generic iOS 目标 + 把完整日志保存到文件
-      - name: Archive (NO code signing, keep full log)
+      # ✅ 用 iOS-only scheme 归档：这样 Watch 的 Assets.xcassets 不会被编译
+      - name: Archive iOS only (NO code signing, keep full log + xcresult)
         run: |
           set -uxo pipefail
           ARCHIVE_PATH="$RUNNER_TEMP/unsigned.xcarchive"
           LOG_PATH="$RUNNER_TEMP/xcodebuild-archive.log"
+          RESULT_PATH="$RUNNER_TEMP/build.xcresult"
 
           set +e
           xcodebuild \
             -workspace ios/BlueWallet.xcworkspace \
-            -scheme BlueWallet \
+            -scheme BlueWallet-iOSOnly \
             -configuration Release \
             -sdk iphoneos \
             -destination 'generic/platform=iOS' \
             -archivePath "$ARCHIVE_PATH" \
+            -resultBundlePath "$RESULT_PATH" \
             clean archive \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
@@ -143,41 +227,33 @@ jobs:
           echo "xcodebuild exit code: $XC"
 
           echo "===== grep key lines ====="
-          grep -nE "error:|ARCHIVE FAILED|\*\* BUILD FAILED \*\*|Command PhaseScriptExecution failed|Signing for|requires a development team|No profiles for|Provisioning profile|CodeSign" \
-            "$LOG_PATH" | tail -n 120 || true
+          grep -nE "error:|fatal error:|ld: |Undefined symbols|clang: error|Swift.*error|ARCHIVE FAILED|\*\* BUILD FAILED \*\*|Command PhaseScriptExecution failed|Signing for|requires a development team|No profiles for|Provisioning profile|CodeSign" \
+            "$LOG_PATH" | tail -n 200 || true
 
           echo "===== tail last 200 lines ====="
           tail -n 200 "$LOG_PATH" || true
 
           exit $XC
 
-      # 归档成功后，把 .xcarchive 手工打包成 unsigned IPA
       - name: Create unsigned IPA from xcarchive
         run: |
           set -euxo pipefail
           ARCHIVE_PATH="$RUNNER_TEMP/unsigned.xcarchive"
           OUT_DIR="$RUNNER_TEMP/out"
-
           mkdir -p "$OUT_DIR/Payload"
 
-          echo "Archive products:"
-          ls -lah "$ARCHIVE_PATH/Products" || true
-          ls -lah "$ARCHIVE_PATH/Products/Applications" || true
-
           cp -R "$ARCHIVE_PATH/Products/Applications/"*.app "$OUT_DIR/Payload/"
-
           (cd "$OUT_DIR" && /usr/bin/zip -r "BlueWallet-unsigned.ipa" "Payload")
 
-          echo "Output:"
           ls -lah "$OUT_DIR"
 
-      # 不管成功/失败都上传：IPA（若生成）、xcarchive（若生成）、以及完整 xcodebuild 日志
-      - name: Upload artifacts (xcarchive + unsigned IPA + logs)
+      - name: Upload artifacts (ipa/xcarchive/logs/xcresult)
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: ios-unsigned-build
           path: |
-            ${{ runner.temp }}/unsigned.xcarchive
             ${{ runner.temp }}/out/BlueWallet-unsigned.ipa
+            ${{ runner.temp }}/unsigned.xcarchive
             ${{ runner.temp }}/xcodebuild-archive.log
+            ${{ runner.temp }}/build.xcresult
