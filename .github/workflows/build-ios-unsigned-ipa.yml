@@ -1,184 +1,120 @@
-name: Build iOS Unsigned IPA (BlueWallet)
+name: Build iOS Unsigned Archive
 
 on:
   workflow_dispatch:
   pull_request:
-  push:
-    branches:
-      - master
-      - main
-
-concurrency:
-  group: ios-unsigned-ipa-${{ github.ref }}
-  cancel-in-progress: true
+    types: [opened, reopened, synchronize, ready_for_review]
 
 permissions:
   contents: read
 
 jobs:
-  ios-unsigned-ipa:
+  ios-unsigned-archive:
     runs-on: macos-14
-    timeout-minutes: 60
-
     env:
-      CI: "true"
-      NPM_CONFIG_AUDIT: "false"
-      NPM_CONFIG_FUND: "false"
+      BUILD_CONFIGURATION: Release
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          fetch-depth: 1
+          fetch-depth: 0
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
-          cache: "npm"
+          node-version: 22
+          cache: npm
 
-      - name: Install JS dependencies
-        shell: bash
+      - name: Setup Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.1.6"
+
+      - name: Cache Ruby gems
+        uses: actions/cache@v4
+        with:
+          path: vendor/bundle
+          key: ${{ runner.os }}-ruby-${{ hashFiles('Gemfile.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-ruby-
+
+      - name: Install Ruby gems
         run: |
-          set -euxo pipefail
-          if [ -f package-lock.json ]; then
-            npm ci
-          elif [ -f yarn.lock ]; then
-            corepack enable
-            yarn --version
-            yarn install --frozen-lockfile
-          else
-            npm install
-          fi
+          bundle config path vendor/bundle
+          bundle install --jobs 4 --retry 3 --quiet
 
-      - name: Ensure CocoaPods available
-        shell: bash
+      - name: Install Node dependencies
+        run: npm ci
+
+      - name: Cache CocoaPods
+        uses: actions/cache@v4
+        with:
+          path: ios/Pods
+          key: ${{ runner.os }}-pods-${{ hashFiles('ios/Podfile.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-pods-
+
+      - name: Install CocoaPods dependencies
+        run: bundle exec fastlane ios install_pods
+
+      # 如果你原来就需要删 Watch target 才能编译，就保留；不需要就删掉这两步
+      - name: Delete Apple Watch target
         run: |
-          set -euxo pipefail
-          if ! command -v pod >/dev/null 2>&1; then
-            sudo gem install cocoapods -N
-          fi
-          pod --version
+          bundle exec ruby <<'RUBY'
+          require 'xcodeproj'
+          project_path = 'ios/BlueWallet.xcodeproj'
+          project = Xcodeproj::Project.open(project_path)
+          target_names = %w[BlueWalletWatch]
+          removed_any = false
+          target_names.each do |target_name|
+            target = project.targets.find { |t| t.name == target_name }
+            next unless target
+            puts "Removing target #{target_name}"
+            target.dependencies.each(&:remove_from_project)
+            target.build_phases.each(&:remove_from_project)
+            project.targets.delete(target)
+            removed_any = true
+          end
+          main_target = project.targets.find { |t| t.name == 'BlueWallet' }
+          if main_target
+            main_target.build_phases.select { |phase| phase.display_name == 'Embed Watch Content' }.each do |phase|
+              puts "Removing build phase #{phase.display_name}"
+              phase.remove_from_project
+              main_target.build_phases.delete(phase)
+              removed_any = true
+            end
+          end
+          project.save if removed_any
+          RUBY
+      - name: Remove Watch schemes
+        run: rm -f ios/BlueWallet.xcodeproj/xcshareddata/xcschemes/BlueWalletWatch.xcscheme
 
-      - name: Install iOS Pods
-        shell: bash
+      - name: Build unsigned archive (device)
+        working-directory: ios
+        env:
+          RCT_NO_LAUNCH_PACKAGER: "1"
         run: |
-          set -euxo pipefail
-          # 优先使用 RN 常见的方式；如果失败再兜底用 pod install
-          if [ -d ios ] && [ -f ios/Podfile ]; then
-            npx pod-install || (cd ios && pod install)
-          else
-            echo "No ios/Podfile found; skipping pods."
-          fi
+          set -eo pipefail
 
-      - name: Build iOS .app (NO signing)
-        shell: bash
-        run: |
-          set -euxo pipefail
-
-          IOS_DIR="ios"
-          if [ ! -d "$IOS_DIR" ]; then
-            echo "No ios directory found."
-            ls -lah
-            exit 1
-          fi
-
-          # ✅ 修复点：必须拿到 *.xcworkspace 这个“目录包”本体，而不是里面的 contents.xcworkspacedata
-          WORKSPACE="$(find "$IOS_DIR" -maxdepth 1 -type d -name '*.xcworkspace' | head -n 1 || true)"
-          PROJECT="$(find "$IOS_DIR" -maxdepth 1 -type d -name '*.xcodeproj' | head -n 1 || true)"
-
-          if [ -n "$WORKSPACE" ]; then
-            echo "Using WORKSPACE=$WORKSPACE"
-            XCODE_CONTAINER_ARGS=(-workspace "$WORKSPACE")
-          elif [ -n "$PROJECT" ]; then
-            echo "Using PROJECT=$PROJECT"
-            XCODE_CONTAINER_ARGS=(-project "$PROJECT")
-          else
-            echo "No .xcworkspace or .xcodeproj found under ios/"
-            ls -lah "$IOS_DIR"
-            exit 1
-          fi
-
-          # 抽取 schemes（稳健解析）
-          SCHEMES="$(xcodebuild -list "${XCODE_CONTAINER_ARGS[@]}" | awk '
-            /Schemes:/{flag=1;next}
-            flag && NF==0{flag=0}
-            flag{gsub(/^[ \t]+/,""); print}
-          ')"
-
-          if [ -z "$SCHEMES" ]; then
-            echo "No schemes found. Raw xcodebuild -list output:"
-            xcodebuild -list "${XCODE_CONTAINER_ARGS[@]}"
-            exit 1
-          fi
-
-          echo "Schemes found:"
-          echo "$SCHEMES"
-
-          # 优先 BlueWallet，否则取第一个
-          SCHEME="BlueWallet"
-          if ! echo "$SCHEMES" | grep -qx "$SCHEME"; then
-            echo "Scheme '$SCHEME' not found; falling back to first scheme..."
-            SCHEME="$(echo "$SCHEMES" | head -n 1)"
-          fi
-          echo "Using SCHEME=$SCHEME"
-
-          rm -rf build
-          mkdir -p build
-
-          # 关闭所有签名相关开关，产出 Release-iphoneos 的 .app
           xcodebuild \
-            "${XCODE_CONTAINER_ARGS[@]}" \
-            -scheme "$SCHEME" \
-            -configuration Release \
+            -workspace BlueWallet.xcworkspace \
+            -scheme BlueWallet \
+            -configuration "${BUILD_CONFIGURATION}" \
             -sdk iphoneos \
-            -destination "generic/platform=iOS" \
-            -derivedDataPath build/DerivedData \
+            -destination 'generic/platform=iOS' \
+            -archivePath build/BlueWallet-unsigned.xcarchive \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
-            DEVELOPMENT_TEAM="" \
-            PROVISIONING_PROFILE_SPECIFIER="" \
-            CODE_SIGN_STYLE=Manual \
-            build
+            clean archive
 
-      - name: Package unsigned .ipa (Payload/*.app)
-        shell: bash
-        run: |
-          set -euxo pipefail
+          ls -la build
+          test -d build/BlueWallet-unsigned.xcarchive
 
-          PRODUCTS_DIR="build/DerivedData/Build/Products"
-          if [ ! -d "$PRODUCTS_DIR" ]; then
-            echo "DerivedData products directory not found: $PRODUCTS_DIR"
-            find build -maxdepth 4 -type d -print || true
-            exit 1
-          fi
-
-          # 找 Release-iphoneos 下的 .app
-          APP_PATH="$(find "$PRODUCTS_DIR" -maxdepth 4 -type d -name '*.app' -path '*Release-iphoneos*' | head -n 1 || true)"
-          if [ -z "$APP_PATH" ] || [ ! -d "$APP_PATH" ]; then
-            echo "Could not find .app under $PRODUCTS_DIR"
-            find "$PRODUCTS_DIR" -maxdepth 5 -type d -name '*.app' -print || true
-            exit 1
-          fi
-
-          echo "APP_PATH=$APP_PATH"
-
-          rm -rf Payload
-          mkdir -p Payload
-          # ditto 比 cp -R 更稳（处理 bundle/资源）
-          /usr/bin/ditto "$APP_PATH" "Payload/$(basename "$APP_PATH")"
-
-          IPA_NAME="bluewallet-unsigned.ipa"
-          rm -f "$IPA_NAME"
-          /usr/bin/zip -qry "$IPA_NAME" Payload
-
-          echo "Created $IPA_NAME"
-          ls -lah "$IPA_NAME"
-
-      - name: Upload unsigned ipa artifact
+      - name: Upload unsigned archive artifact
         uses: actions/upload-artifact@v4
         with:
-          name: bluewallet-ios-unsigned-ipa
-          path: bluewallet-unsigned.ipa
-          if-no-files-found: error
+          name: BlueWallet-iOS-unsigned-xcarchive
+          path: ios/build/BlueWallet-unsigned.xcarchive
+          retention-days: 7
