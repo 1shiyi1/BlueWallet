@@ -31,7 +31,7 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: Setup Node.js (LTS even-numbered)
+      - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: "20"
@@ -60,40 +60,75 @@ jobs:
           fi
           pod --version
 
-      - name: Install iOS Pods (per README)
+      - name: Install iOS Pods
         shell: bash
         run: |
           set -euxo pipefail
-          npx pod-install
-        # README 提到 iOS 需要 npx pod-install :contentReference[oaicite:1]{index=1}
+          # 优先使用 RN 常见的方式；如果失败再兜底用 pod install
+          if [ -d ios ] && [ -f ios/Podfile ]; then
+            npx pod-install || (cd ios && pod install)
+          else
+            echo "No ios/Podfile found; skipping pods."
+          fi
 
       - name: Build iOS .app (NO signing)
         shell: bash
         run: |
           set -euxo pipefail
 
-          # BlueWallet README 提示用 ios/BlueWallet.xcworkspace 且 scheme/target 是 BlueWallet :contentReference[oaicite:2]{index=2}
-          WORKSPACE="$(ls -1 ios/*.xcworkspace | head -n 1)"
-          echo "WORKSPACE=$WORKSPACE"
+          IOS_DIR="ios"
+          if [ ! -d "$IOS_DIR" ]; then
+            echo "No ios directory found."
+            ls -lah
+            exit 1
+          fi
 
-          # 优先用 README 的 scheme：BlueWallet；如果不匹配，就从 xcodebuild -list 里兜底取第一个
+          # ✅ 修复点：必须拿到 *.xcworkspace 这个“目录包”本体，而不是里面的 contents.xcworkspacedata
+          WORKSPACE="$(find "$IOS_DIR" -maxdepth 1 -type d -name '*.xcworkspace' | head -n 1 || true)"
+          PROJECT="$(find "$IOS_DIR" -maxdepth 1 -type d -name '*.xcodeproj' | head -n 1 || true)"
+
+          if [ -n "$WORKSPACE" ]; then
+            echo "Using WORKSPACE=$WORKSPACE"
+            XCODE_CONTAINER_ARGS=(-workspace "$WORKSPACE")
+          elif [ -n "$PROJECT" ]; then
+            echo "Using PROJECT=$PROJECT"
+            XCODE_CONTAINER_ARGS=(-project "$PROJECT")
+          else
+            echo "No .xcworkspace or .xcodeproj found under ios/"
+            ls -lah "$IOS_DIR"
+            exit 1
+          fi
+
+          # 抽取 schemes（稳健解析）
+          SCHEMES="$(xcodebuild -list "${XCODE_CONTAINER_ARGS[@]}" | awk '
+            /Schemes:/{flag=1;next}
+            flag && NF==0{flag=0}
+            flag{gsub(/^[ \t]+/,""); print}
+          ')"
+
+          if [ -z "$SCHEMES" ]; then
+            echo "No schemes found. Raw xcodebuild -list output:"
+            xcodebuild -list "${XCODE_CONTAINER_ARGS[@]}"
+            exit 1
+          fi
+
+          echo "Schemes found:"
+          echo "$SCHEMES"
+
+          # 优先 BlueWallet，否则取第一个
           SCHEME="BlueWallet"
-          if ! xcodebuild -list -workspace "$WORKSPACE" | grep -q "Schemes:"; then
-            echo "xcodebuild -list failed"
-            xcodebuild -list -workspace "$WORKSPACE"
+          if ! echo "$SCHEMES" | grep -qx "$SCHEME"; then
+            echo "Scheme '$SCHEME' not found; falling back to first scheme..."
+            SCHEME="$(echo "$SCHEMES" | head -n 1)"
           fi
-          if ! xcodebuild -list -workspace "$WORKSPACE" | sed -n '/Schemes:/,$p' | grep -q "^\s*$SCHEME$"; then
-            echo "Scheme '$SCHEME' not found. Falling back to first scheme in workspace..."
-            SCHEME="$(xcodebuild -list -workspace "$WORKSPACE" | sed -n '/Schemes:/,$p' | awk 'NF{print $0}' | tail -n +2 | head -n 1 | sed 's/^\s*//g')"
-          fi
-          echo "SCHEME=$SCHEME"
+          echo "Using SCHEME=$SCHEME"
 
           rm -rf build
           mkdir -p build
 
-          # 直接 build Release-iphoneos 的 .app，并彻底关掉 codesign
+          # 关闭所有签名相关开关，产出 Release-iphoneos 的 .app
           xcodebuild \
-            -workspace "$WORKSPACE" \
+            "${XCODE_CONTAINER_ARGS[@]}" \
             -scheme "$SCHEME" \
             -configuration Release \
             -sdk iphoneos \
@@ -104,6 +139,7 @@ jobs:
             CODE_SIGN_IDENTITY="" \
             DEVELOPMENT_TEAM="" \
             PROVISIONING_PROFILE_SPECIFIER="" \
+            CODE_SIGN_STYLE=Manual \
             build
 
       - name: Package unsigned .ipa (Payload/*.app)
@@ -111,21 +147,31 @@ jobs:
         run: |
           set -euxo pipefail
 
-          APP_PATH="$(find build/DerivedData/Build/Products -maxdepth 3 -type d -name '*.app' -path '*Release-iphoneos*' | head -n 1)"
+          PRODUCTS_DIR="build/DerivedData/Build/Products"
+          if [ ! -d "$PRODUCTS_DIR" ]; then
+            echo "DerivedData products directory not found: $PRODUCTS_DIR"
+            find build -maxdepth 4 -type d -print || true
+            exit 1
+          fi
+
+          # 找 Release-iphoneos 下的 .app
+          APP_PATH="$(find "$PRODUCTS_DIR" -maxdepth 4 -type d -name '*.app' -path '*Release-iphoneos*' | head -n 1 || true)"
           if [ -z "$APP_PATH" ] || [ ! -d "$APP_PATH" ]; then
-            echo "Could not find built .app under build/DerivedData/Build/Products"
-            find build/DerivedData/Build/Products -maxdepth 4 -type d -name '*.app' -print || true
+            echo "Could not find .app under $PRODUCTS_DIR"
+            find "$PRODUCTS_DIR" -maxdepth 5 -type d -name '*.app' -print || true
             exit 1
           fi
 
           echo "APP_PATH=$APP_PATH"
+
           rm -rf Payload
           mkdir -p Payload
-          cp -R "$APP_PATH" Payload/
+          # ditto 比 cp -R 更稳（处理 bundle/资源）
+          /usr/bin/ditto "$APP_PATH" "Payload/$(basename "$APP_PATH")"
 
           IPA_NAME="bluewallet-unsigned.ipa"
           rm -f "$IPA_NAME"
-          /usr/bin/zip -r "$IPA_NAME" Payload
+          /usr/bin/zip -qry "$IPA_NAME" Payload
 
           echo "Created $IPA_NAME"
           ls -lah "$IPA_NAME"
