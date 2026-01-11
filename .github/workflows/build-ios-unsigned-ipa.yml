@@ -70,18 +70,15 @@ jobs:
             npm install
           fi
 
-      # 自动识别项目要求的 Ruby 版本（优先 .ruby-version，其次 Gemfile）
       - name: Detect Ruby version (from repo)
         id: rubyver
         shell: bash
         run: |
           set -euo pipefail
           RUBY_VER=""
-
           if [ -f .ruby-version ]; then
             RUBY_VER="$(head -n 1 .ruby-version | tr -d '[:space:]')"
           fi
-
           if [ -z "$RUBY_VER" ]; then
             for f in Gemfile ios/Gemfile; do
               if [ -f "$f" ]; then
@@ -95,11 +92,9 @@ jobs:
               fi
             done
           fi
-
           if [ -z "$RUBY_VER" ]; then
             RUBY_VER="3.1.6"
           fi
-
           echo "ruby=$RUBY_VER" >> "$GITHUB_OUTPUT"
           echo "Detected Ruby: $RUBY_VER"
 
@@ -125,10 +120,8 @@ jobs:
           test -d ios
           test -f ios/Podfile
 
-          # 先走 RN 推荐
           npx pod-install || true
 
-          # 兜底：确保 Pods 一定装上
           if [ ! -d ios/Pods ]; then
             if [ -f ios/Gemfile ]; then
               (cd ios && bundle exec pod install --repo-update)
@@ -144,7 +137,62 @@ jobs:
         run: |
           set -euxo pipefail
           test -d "${WORKSPACE}"
-          xcodebuild -list -workspace "${WORKSPACE}" | sed -n '1,220p'
+          xcodebuild -list -workspace "${WORKSPACE}" | tee build-schemes.txt
+
+      # ✅ 关键修复：CI里把 Scheme 里所有 “Watch” 相关 target 从 BuildAction 里移除
+      # 这样就不会去编译 BlueWalletWatch 的 Assets.xcassets（你现在就是死在这一步）
+      - name: Patch scheme to exclude Watch targets (CI only)
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          # 找到对应 xcscheme 文件
+          SCHEME_FILE="$(find ios -path "*xcshareddata/xcschemes/${SCHEME}.xcscheme" -print -quit || true)"
+          if [ -z "$SCHEME_FILE" ]; then
+            echo "Cannot find scheme file for ${SCHEME}.xcscheme"
+            find ios -path "*xcshareddata/xcschemes/*.xcscheme" -maxdepth 6 -print || true
+            exit 1
+          fi
+
+          echo "Scheme file: $SCHEME_FILE"
+          cp -v "$SCHEME_FILE" "${SCHEME_FILE}.bak"
+
+          python3 - <<'PY' "$SCHEME_FILE"
+          import sys
+          import xml.etree.ElementTree as ET
+
+          path = sys.argv[1]
+          tree = ET.parse(path)
+          root = tree.getroot()
+
+          ba = root.find("BuildAction")
+          if ba is None:
+            print("No BuildAction found, skip")
+            sys.exit(0)
+
+          entries = ba.find("BuildActionEntries")
+          if entries is None:
+            print("No BuildActionEntries found, skip")
+            sys.exit(0)
+
+          removed = 0
+          for e in list(entries):
+            br = e.find("BuildableReference")
+            if br is None:
+              continue
+            name = br.get("BlueprintName", "") or ""
+            # 删除所有包含 Watch 的 target（BlueWalletWatch / Watch Extension 等）
+            if "Watch" in name:
+              entries.remove(e)
+              removed += 1
+
+          tree.write(path, encoding="UTF-8", xml_declaration=True)
+          print(f"Removed {removed} Watch build entries from scheme.")
+          PY
+
+          # 简单对比一下
+          echo "Diff (if any):"
+          (diff -u "${SCHEME_FILE}.bak" "$SCHEME_FILE" || true) | sed -n '1,200p'
 
       - name: Build archive (NO signing)
         shell: bash
@@ -171,14 +219,18 @@ jobs:
             DEVELOPMENT_TEAM="" \
             PROVISIONING_PROFILE_SPECIFIER="" \
             PROVISIONING_PROFILE="" \
-            SWIFT_TREAT_WARNINGS_AS_ERRORS=NO \
-            GCC_TREAT_WARNINGS_AS_ERRORS=NO \
-            SWIFT_STRICT_CONCURRENCY=minimal \
-            SWIFT_VERSION=5.9 \
             archive | tee build/xcodebuild.log
           RET=${PIPESTATUS[0]}
           set -e
           exit $RET
+
+      - name: Inspect archive products (debug)
+        shell: bash
+        run: |
+          set -euxo pipefail
+          test -d "${ARCHIVE_PATH}"
+          ls -lah "${ARCHIVE_PATH}/Products/Applications" || true
+          find "${ARCHIVE_PATH}/Products/Applications" -maxdepth 2 -type d -name "*.app" -print || true
 
       - name: Package unsigned IPA (Payload/*.app)
         shell: bash
@@ -189,7 +241,7 @@ jobs:
           APP_DIR="$(find "${ARCHIVE_PATH}/Products/Applications" -maxdepth 1 -type d -name '*.app' | head -n 1 || true)"
           if [ -z "$APP_DIR" ] || [ ! -d "$APP_DIR" ]; then
             echo "No .app found in xcarchive:"
-            find "${ARCHIVE_PATH}" -maxdepth 5 -type d -name "*.app" -print || true
+            find "${ARCHIVE_PATH}" -maxdepth 6 -type d -name "*.app" -print || true
             exit 1
           fi
 
@@ -201,7 +253,6 @@ jobs:
           echo "IPA created:"
           ls -lah "${IPA_NAME}"
 
-      # ✅ 关键：强校验 + 上传 Artifact（找不到就 fail，避免“成功但没产物”）
       - name: Verify IPA exists
         shell: bash
         run: |
@@ -224,5 +275,6 @@ jobs:
           name: ios-build-logs
           path: |
             build/xcodebuild.log
+            build-schemes.txt
           if-no-files-found: ignore
           retention-days: 7
