@@ -28,42 +28,73 @@ jobs:
         run: |
           xcodebuild -list -workspace ios/BlueWallet.xcworkspace
 
-      - name: Archive (NO code signing)
+      # 归档：禁用签名 + 指定 generic iOS 目标 + 把完整日志保存到文件
+      # 同时输出关键错误摘要，避免 GitHub 日志被截断后你找不到 error
+      - name: Archive (NO code signing, keep full log)
         run: |
-          set -euxo pipefail
+          set -uxo pipefail
           ARCHIVE_PATH="$RUNNER_TEMP/unsigned.xcarchive"
+          LOG_PATH="$RUNNER_TEMP/xcodebuild-archive.log"
 
+          # 不要让失败直接中断后续步骤（我们要先把日志留住并上传）
+          set +e
           xcodebuild \
             -workspace ios/BlueWallet.xcworkspace \
             -scheme BlueWallet \
             -configuration Release \
             -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
             -archivePath "$ARCHIVE_PATH" \
             clean archive \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
-            PROVISIONING_PROFILE_SPECIFIER=""
+            PROVISIONING_PROFILE_SPECIFIER="" \
+            DEVELOPMENT_TEAM="" \
+            CODE_SIGN_STYLE=Manual \
+            | tee "$LOG_PATH"
 
+          XC=$?
+          echo "xcodebuild exit code: $XC"
+
+          echo "===== grep key lines ====="
+          grep -nE "error:|ARCHIVE FAILED|\*\* BUILD FAILED \*\*|Command PhaseScriptExecution failed|Signing for|requires a development team|No profiles for|Provisioning profile|CodeSign" \
+            "$LOG_PATH" | tail -n 120 || true
+
+          echo "===== tail last 200 lines ====="
+          tail -n 200 "$LOG_PATH" || true
+
+          exit $XC
+
+      # 归档成功后，把 .xcarchive 手工打包成 unsigned IPA
       - name: Create unsigned IPA from xcarchive
         run: |
           set -euxo pipefail
           ARCHIVE_PATH="$RUNNER_TEMP/unsigned.xcarchive"
           OUT_DIR="$RUNNER_TEMP/out"
+
           mkdir -p "$OUT_DIR/Payload"
+
+          echo "Archive products:"
+          ls -lah "$ARCHIVE_PATH/Products" || true
+          ls -lah "$ARCHIVE_PATH/Products/Applications" || true
 
           # Copy .app into Payload
           cp -R "$ARCHIVE_PATH/Products/Applications/"*.app "$OUT_DIR/Payload/"
 
-          # Zip Payload => IPA
+          # Zip Payload => IPA (IPA 本质就是 zip)
           (cd "$OUT_DIR" && /usr/bin/zip -r "BlueWallet-unsigned.ipa" "Payload")
 
+          echo "Output:"
           ls -lah "$OUT_DIR"
 
-      - name: Upload artifacts (xcarchive + unsigned IPA)
+      # 不管成功/失败都上传：你要的 IPA（如果生成了）、xcarchive（如果生成了）、以及完整 xcodebuild 日志
+      - name: Upload artifacts (xcarchive + unsigned IPA + logs)
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: ios-unsigned-build
           path: |
             ${{ runner.temp }}/unsigned.xcarchive
             ${{ runner.temp }}/out/BlueWallet-unsigned.ipa
+            ${{ runner.temp }}/xcodebuild-archive.log
