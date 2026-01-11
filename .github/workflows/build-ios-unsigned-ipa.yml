@@ -12,19 +12,22 @@ concurrency:
 
 permissions:
   contents: read
+  actions: write
 
 jobs:
   build-ios-unsigned-ipa:
     runs-on: macos-latest
-    timeout-minutes: 75
+    timeout-minutes: 90
 
     env:
       CI: "true"
       NPM_CONFIG_AUDIT: "false"
       NPM_CONFIG_FUND: "false"
+
       WORKSPACE: ios/BlueWallet.xcworkspace
       SCHEME: BlueWallet
       CONFIGURATION: Release
+
       ARCHIVE_PATH: build/BlueWallet-Unsigned.xcarchive
       IPA_NAME: BlueWallet-unsigned.ipa
 
@@ -67,7 +70,7 @@ jobs:
             npm install
           fi
 
-      # ✅ 自动识别项目要求的 Ruby 版本（优先 .ruby-version，其次 Gemfile）
+      # 自动识别项目要求的 Ruby 版本（优先 .ruby-version，其次 Gemfile）
       - name: Detect Ruby version (from repo)
         id: rubyver
         shell: bash
@@ -115,7 +118,6 @@ jobs:
           fi
           pod --version
 
-      # ✅ 按 BlueWallet README 常见做法：npx pod-install（失败再兜底 pod install）
       - name: Install iOS Pods
         shell: bash
         run: |
@@ -123,8 +125,10 @@ jobs:
           test -d ios
           test -f ios/Podfile
 
+          # 先走 RN 推荐
           npx pod-install || true
 
+          # 兜底：确保 Pods 一定装上
           if [ ! -d ios/Pods ]; then
             if [ -f ios/Gemfile ]; then
               (cd ios && bundle exec pod install --repo-update)
@@ -141,3 +145,84 @@ jobs:
           set -euxo pipefail
           test -d "${WORKSPACE}"
           xcodebuild -list -workspace "${WORKSPACE}" | sed -n '1,220p'
+
+      - name: Build archive (NO signing)
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p build
+
+          export NODE_BINARY="$(command -v node)"
+          echo "NODE_BINARY=$NODE_BINARY"
+
+          set +e
+          xcodebuild \
+            -workspace "${WORKSPACE}" \
+            -scheme "${SCHEME}" \
+            -configuration "${CONFIGURATION}" \
+            -sdk iphoneos \
+            -destination "generic/platform=iOS" \
+            -archivePath "${ARCHIVE_PATH}" \
+            SKIP_INSTALL=NO \
+            ENABLE_BITCODE=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            DEVELOPMENT_TEAM="" \
+            PROVISIONING_PROFILE_SPECIFIER="" \
+            PROVISIONING_PROFILE="" \
+            SWIFT_TREAT_WARNINGS_AS_ERRORS=NO \
+            GCC_TREAT_WARNINGS_AS_ERRORS=NO \
+            SWIFT_STRICT_CONCURRENCY=minimal \
+            SWIFT_VERSION=5.9 \
+            archive | tee build/xcodebuild.log
+          RET=${PIPESTATUS[0]}
+          set -e
+          exit $RET
+
+      - name: Package unsigned IPA (Payload/*.app)
+        shell: bash
+        run: |
+          set -euxo pipefail
+          test -d "${ARCHIVE_PATH}"
+
+          APP_DIR="$(find "${ARCHIVE_PATH}/Products/Applications" -maxdepth 1 -type d -name '*.app' | head -n 1 || true)"
+          if [ -z "$APP_DIR" ] || [ ! -d "$APP_DIR" ]; then
+            echo "No .app found in xcarchive:"
+            find "${ARCHIVE_PATH}" -maxdepth 5 -type d -name "*.app" -print || true
+            exit 1
+          fi
+
+          rm -rf Payload "${IPA_NAME}"
+          mkdir -p Payload
+          /usr/bin/ditto "$APP_DIR" "Payload/$(basename "$APP_DIR")"
+          /usr/bin/zip -qry "${IPA_NAME}" Payload
+
+          echo "IPA created:"
+          ls -lah "${IPA_NAME}"
+
+      # ✅ 关键：强校验 + 上传 Artifact（找不到就 fail，避免“成功但没产物”）
+      - name: Verify IPA exists
+        shell: bash
+        run: |
+          set -euxo pipefail
+          test -f "${IPA_NAME}"
+          ls -lah "${IPA_NAME}"
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: BlueWallet-unsigned-ipa
+          path: ${{ env.IPA_NAME }}
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload logs (always)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-build-logs
+          path: |
+            build/xcodebuild.log
+          if-no-files-found: ignore
+          retention-days: 7
