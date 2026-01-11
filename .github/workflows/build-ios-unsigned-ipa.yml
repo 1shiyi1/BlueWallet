@@ -2,132 +2,142 @@ name: iOS Unsigned IPA (BlueWallet)
 
 on:
   workflow_dispatch:
+  pull_request:
+  push:
+    branches: [ master, main ]
+
+concurrency:
+  group: ios-unsigned-ipa-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
 
 jobs:
   build-ios-unsigned-ipa:
-    runs-on: macos-13
+    runs-on: macos-latest
+    timeout-minutes: 75
 
     env:
+      CI: "true"
+      NPM_CONFIG_AUDIT: "false"
+      NPM_CONFIG_FUND: "false"
       WORKSPACE: ios/BlueWallet.xcworkspace
       SCHEME: BlueWallet
       CONFIGURATION: Release
-      ARCHIVE_PATH: build/BlueWallet.xcarchive
+      ARCHIVE_PATH: build/BlueWallet-Unsigned.xcarchive
       IPA_NAME: BlueWallet-unsigned.ipa
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
+          fetch-depth: 1
           submodules: recursive
 
-      # 关键：锁定 Xcode 版本，避免你在 15.4 上遇到的 Widgets 并发错误直接变成 error
-      - name: Setup Xcode
-        uses: maxim-lobanov/setup-xcode@v1
-        with:
-          xcode-version: "15.2"
-
-      - name: Show Xcode version
+      - name: Environment info
+        shell: bash
         run: |
           set -euxo pipefail
+          sw_vers
           xcodebuild -version
           xcodebuild -showsdks
 
-      # Node：RN 打包/脚本会用到
-      - name: Setup Node (from .nvmrc if present)
+      - name: Setup Node.js (LTS)
         uses: actions/setup-node@v4
         with:
-          node-version-file: .nvmrc
-          cache: yarn
+          node-version: "20"
+          cache: "npm"
 
       - name: Install JS dependencies
+        shell: bash
         run: |
           set -euxo pipefail
-          if [ -f yarn.lock ]; then
+          if [ -f package-lock.json ]; then
+            npm ci
+          elif [ -f yarn.lock ]; then
             corepack enable
             yarn --version
             yarn install --frozen-lockfile
-          elif [ -f package-lock.json ]; then
-            npm ci
+          elif [ -f pnpm-lock.yaml ]; then
+            corepack enable
+            pnpm --version
+            pnpm install --frozen-lockfile
           else
             npm install
           fi
 
-      # 关键：Ruby 必须匹配 Gemfile (你日志里就是这里炸的)
-      - name: Setup Ruby 3.1.6 (Gemfile requirement)
+      # ✅ 自动识别项目要求的 Ruby 版本（优先 .ruby-version，其次 Gemfile）
+      - name: Detect Ruby version (from repo)
+        id: rubyver
+        shell: bash
+        run: |
+          set -euo pipefail
+          RUBY_VER=""
+
+          if [ -f .ruby-version ]; then
+            RUBY_VER="$(head -n 1 .ruby-version | tr -d '[:space:]')"
+          fi
+
+          if [ -z "$RUBY_VER" ]; then
+            for f in Gemfile ios/Gemfile; do
+              if [ -f "$f" ]; then
+                v="$(grep -E '^\s*ruby\s+["'\'']([0-9]+\.[0-9]+\.[0-9]+)["'\'']' "$f" \
+                  | head -n 1 \
+                  | sed -E 's/^\s*ruby\s+["'\'']([0-9]+\.[0-9]+\.[0-9]+)["'\''].*/\1/')"
+                if [ -n "${v:-}" ]; then
+                  RUBY_VER="$v"
+                  break
+                fi
+              fi
+            done
+          fi
+
+          if [ -z "$RUBY_VER" ]; then
+            RUBY_VER="3.1.6"
+          fi
+
+          echo "ruby=$RUBY_VER" >> "$GITHUB_OUTPUT"
+          echo "Detected Ruby: $RUBY_VER"
+
+      - name: Setup Ruby (match repo requirement)
         uses: ruby/setup-ruby@v1
         with:
-          ruby-version: "3.1.6"
-          bundler-cache: true
+          ruby-version: ${{ steps.rubyver.outputs.ruby }}
+          bundler-cache: ${{ hashFiles('Gemfile.lock', 'ios/Gemfile.lock') != '' }}
 
-      - name: Install Pods
+      - name: Ensure CocoaPods available
+        shell: bash
         run: |
           set -euxo pipefail
-          cd ios
-          # BlueWallet 通常用 bundler 管 cocoapods
-          bundle exec pod --version
-          bundle exec pod install --verbose
+          if ! command -v pod >/dev/null 2>&1; then
+            sudo gem install cocoapods -N
+          fi
+          pod --version
+
+      # ✅ 按 BlueWallet README 常见做法：npx pod-install（失败再兜底 pod install）
+      - name: Install iOS Pods
+        shell: bash
+        run: |
+          set -euxo pipefail
+          test -d ios
+          test -f ios/Podfile
+
+          npx pod-install || true
+
+          if [ ! -d ios/Pods ]; then
+            if [ -f ios/Gemfile ]; then
+              (cd ios && bundle exec pod install --repo-update)
+            elif [ -f Gemfile ]; then
+              (cd ios && bundle exec pod install --repo-update)
+            else
+              (cd ios && pod install --repo-update)
+            fi
+          fi
 
       - name: Sanity check workspace/scheme
+        shell: bash
         run: |
           set -euxo pipefail
           test -d "${WORKSPACE}"
-          xcodebuild -list -workspace "${WORKSPACE}"
-          xcodebuild -list -workspace "${WORKSPACE}" | sed -n '1,200p'
-
-      # 关键：不签名归档（用于后续自己签名）
-      - name: Build archive (NO code signing)
-        run: |
-          set -euxo pipefail
-          mkdir -p build
-
-          # 让 Xcode 构建脚本能找到 node
-          export NODE_BINARY="$(command -v node)"
-          echo "NODE_BINARY=$NODE_BINARY"
-
-          xcodebuild \
-            -workspace "${WORKSPACE}" \
-            -scheme "${SCHEME}" \
-            -configuration "${CONFIGURATION}" \
-            -sdk iphoneos \
-            -destination "generic/platform=iOS" \
-            -archivePath "${ARCHIVE_PATH}" \
-            archive \
-            CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGN_IDENTITY="" \
-            DEVELOPMENT_TEAM="" \
-            PROVISIONING_PROFILE_SPECIFIER="" \
-            PROVISIONING_PROFILE="" \
-            COMPILER_INDEX_STORE_ENABLE=NO \
-            SWIFT_TREAT_WARNINGS_AS_ERRORS=NO \
-            SWIFT_STRICT_CONCURRENCY=minimal
-
-      # 关键：手工打包 Payload => unsigned IPA
-      - name: Package unsigned IPA
-        run: |
-          set -euxo pipefail
-
-          APP_PATH="${ARCHIVE_PATH}/Products/Applications/${SCHEME}.app"
-          if [ ! -d "$APP_PATH" ]; then
-            echo "ERROR: App not found at: $APP_PATH"
-            echo "Archive contents:"
-            find "${ARCHIVE_PATH}" -maxdepth 4 -type d -name "*.app" -print
-            exit 1
-          fi
-
-          rm -rf Payload "${IPA_NAME}"
-          mkdir -p Payload
-          ditto "$APP_PATH" "Payload/${SCHEME}.app"
-
-          # 生成 .ipa（本质是 zip，根目录必须有 Payload/xxx.app）
-          /usr/bin/zip -qry "${IPA_NAME}" Payload
-
-          echo "Built unsigned IPA: ${IPA_NAME}"
-          ls -lah "${IPA_NAME}"
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: BlueWallet-unsigned-ipa
-          path: ${{ env.IPA_NAME }}
-          if-no-files-found: error
+          xcodebuild -list -workspace "${WORKSPACE}" | sed -n '1,220p'
