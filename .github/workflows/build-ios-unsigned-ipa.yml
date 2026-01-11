@@ -1,4 +1,4 @@
-name: Build iOS Unsigned IPA (No Signing)
+name: Build iOS Unsigned IPA (BlueWallet, No Signing)
 
 on:
   workflow_dispatch:
@@ -28,44 +28,56 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
 
-      - name: Select Xcode (stable)
-        uses: maxim-lobanov/setup-xcode@v1
-        with:
-          xcode-version: "15.4"
-
-      - name: Setup Node.js
+      - name: Setup Node.js (LTS)
         uses: actions/setup-node@v4
         with:
           node-version: "20"
           cache: "npm"
 
-      - name: Setup Ruby (for CocoaPods / Bundler)
-        uses: ruby/setup-ruby@v1
-        with:
-          ruby-version: "3.2"
-          bundler-cache: true
-
-      - name: Preflight (show repo layout)
+      # ✅ 关键：自动读取项目要求的 Ruby 版本，避免你遇到的 “Gemfile 指定 3.1.6 但装了 3.2.x” 这种错误
+      - name: Detect required Ruby version
+        id: rubyver
         shell: bash
         run: |
-          set -euxo pipefail
-          echo "Xcode:"
-          xcodebuild -version
-          echo "Node:"
-          node -v
-          echo "Ruby:"
-          ruby -v
-          echo "Top-level files:"
-          ls -lah
-          echo "iOS folder:"
-          ls -lah ios || true
-          echo "Workspaces/projects under ios/:"
-          find ios -maxdepth 2 -name "*.xcworkspace" -o -name "*.xcodeproj" || true
+          set -euo pipefail
 
-      - name: Install JS dependencies (npm/yarn/pnpm fallback)
+          RUBY_VER=""
+
+          # 1) 优先 .ruby-version
+          if [ -f .ruby-version ]; then
+            RUBY_VER="$(head -n 1 .ruby-version | tr -d '[:space:]')"
+          fi
+
+          # 2) 再从 Gemfile / ios/Gemfile 里抓 ruby "x.y.z"
+          if [ -z "$RUBY_VER" ]; then
+            for f in Gemfile ios/Gemfile; do
+              if [ -f "$f" ]; then
+                v="$(grep -E '^\s*ruby\s+["'\'']([0-9]+\.[0-9]+\.[0-9]+)["'\'']' "$f" \
+                    | head -n 1 \
+                    | sed -E 's/^\s*ruby\s+["'\'']([0-9]+\.[0-9]+\.[0-9]+)["'\''].*/\1/')"
+                if [ -n "${v:-}" ]; then
+                  RUBY_VER="$v"
+                  break
+                fi
+              fi
+            done
+          fi
+
+          # 3) 兜底（如果项目没写死 ruby 版本）
+          if [ -z "$RUBY_VER" ]; then
+            RUBY_VER="3.1.6"
+          fi
+
+          echo "ruby=$RUBY_VER" >> "$GITHUB_OUTPUT"
+          echo "Detected Ruby: $RUBY_VER"
+
+      - name: Setup Ruby (match BlueWallet requirement)
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: ${{ steps.rubyver.outputs.ruby }}
+
+      - name: Install JS deps
         shell: bash
         run: |
           set -euxo pipefail
@@ -73,151 +85,99 @@ jobs:
             npm ci
           elif [ -f yarn.lock ]; then
             corepack enable
-            yarn --version
             yarn install --frozen-lockfile
           elif [ -f pnpm-lock.yaml ]; then
             corepack enable
-            pnpm --version
             pnpm install --frozen-lockfile
           else
             npm install
           fi
 
-      - name: Install iOS Pods (multi-fallback)
+      # ✅ CocoaPods：优先走 Bundler（如果项目提供 Gemfile.lock 会更稳）
+      - name: Install CocoaPods (prefer Bundler if present)
         shell: bash
         run: |
           set -euxo pipefail
-          if [ ! -d ios ] || [ ! -f ios/Podfile ]; then
-            echo "No ios/Podfile found; skip pods."
-            exit 0
+
+          # 找 Gemfile.lock（ios 优先）
+          LOCKFILE=""
+          if [ -f ios/Gemfile.lock ]; then
+            LOCKFILE="ios/Gemfile.lock"
+          elif [ -f Gemfile.lock ]; then
+            LOCKFILE="Gemfile.lock"
           fi
 
-          # 1) 若有 Gemfile，优先 bundle exec pod install（最可控）
-          if [ -f ios/Gemfile ] || [ -f Gemfile ]; then
-            echo "Gemfile detected -> bundle exec pod install"
-            (cd ios && bundle exec pod install) && exit 0 || true
+          # 如果有 lock，安装 lock 里指定的 bundler 版本（避免 bundler 版本不匹配）
+          if [ -n "$LOCKFILE" ]; then
+            BUNDLER_VER="$(awk '/^BUNDLED WITH$/{getline; gsub(/^[ \t]+/,""); print; exit}' "$LOCKFILE" || true)"
+            if [ -n "${BUNDLER_VER:-}" ]; then
+              gem install bundler -v "$BUNDLER_VER" -N
+            else
+              gem install bundler -N
+            fi
+          else
+            gem install bundler -N
           fi
 
-          # 2) RN 常见方式
-          echo "Try npx pod-install"
-          npx pod-install && exit 0 || true
+          # 如果有 Gemfile，则用 bundle 安装（root 或 ios 任选其一存在就行）
+          if [ -f ios/Gemfile ]; then
+            (cd ios && bundle install)
+            (cd ios && bundle exec pod --version)
+          elif [ -f Gemfile ]; then
+            bundle install
+            bundle exec pod --version
+          else
+            # 没 Gemfile 就直接装 cocoapods
+            gem install cocoapods -N
+            pod --version
+          fi
 
-          # 3) 兜底：pod install --repo-update（最慢但最稳）
-          echo "Fallback: pod install --repo-update"
-          (cd ios && pod install --repo-update)
+      # ✅ 按 BlueWallet README：iOS 先 npx pod-install :contentReference[oaicite:2]{index=2}
+      - name: Install iOS Pods (per BlueWallet README)
+        shell: bash
+        run: |
+          set -euxo pipefail
+          test -d ios
+          test -f ios/Podfile
 
-      - name: Detect workspace/project & scheme (robust)
-        id: detect
+          # 优先用项目推荐的 npx pod-install
+          npx pod-install || true
+
+          # 兜底：如果上面没把 Pods 装好，就直接 pod install
+          if [ ! -d ios/Pods ]; then
+            if [ -f ios/Gemfile ]; then
+              (cd ios && bundle exec pod install --repo-update)
+            elif [ -f Gemfile ]; then
+              (cd ios && bundle exec pod install --repo-update)
+            else
+              (cd ios && pod install --repo-update)
+            fi
+          fi
+
+      # ✅ 按 README：workspace=ios/BlueWallet.xcworkspace；scheme/target=BlueWallet :contentReference[oaicite:3]{index=3}
+      - name: Build xcarchive (NO signing)
         shell: bash
         run: |
           set -euxo pipefail
 
-          python3 - <<'PY'
-          import json, os, subprocess, sys
-          from pathlib import Path
-
-          ios = Path("ios")
-          if not ios.exists():
-              print("::error::No ios/ directory found")
-              sys.exit(1)
-
-          # Prefer workspace, then project. Prefer names containing 'BlueWallet' if available.
-          workspaces = sorted([p for p in ios.glob("*.xcworkspace") if p.is_dir()],
-                              key=lambda p: (("bluewallet" not in p.name.lower()), p.name.lower()))
-          projects = sorted([p for p in ios.glob("*.xcodeproj") if p.is_dir()],
-                            key=lambda p: (("bluewallet" not in p.name.lower()), p.name.lower()))
-
-          candidates = []
-          for w in workspaces:
-              candidates.append(("workspace", str(w)))
-          for p in projects:
-              candidates.append(("project", str(p)))
-
-          if not candidates:
-              print("::error::No .xcworkspace or .xcodeproj found under ios/")
-              sys.exit(1)
-
-          def run_list(kind, path):
-              cmd = ["xcodebuild", "-list", "-json", f"-{kind}", path]
-              r = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-              if r.returncode != 0:
-                  return None, r.stderr.strip()
-              try:
-                  return json.loads(r.stdout), None
-              except Exception as e:
-                  return None, f"json parse failed: {e}"
-
-          chosen = None
-          chosen_errs = []
-
-          # pick first candidate that yields schemes
-          for kind, path in candidates:
-              data, err = run_list(kind, path)
-              if not data:
-                  chosen_errs.append((kind, path, err))
-                  continue
-              # xcodebuild -list -json structure
-              # workspace: {"workspace": {"schemes":[...] ...}}
-              # project:   {"project": {"schemes":[...] ...}}
-              root = data.get(kind) or {}
-              schemes = root.get("schemes") or []
-              if schemes:
-                  chosen = (kind, path, schemes)
-                  break
-              chosen_errs.append((kind, path, "no schemes"))
-
-          if not chosen:
-              print("::error::Could not get schemes from any workspace/project")
-              for kind, path, err in chosen_errs:
-                  print(f"::error::{kind} {path} -> {err}")
-              sys.exit(1)
-
-          kind, path, schemes = chosen
-          # prefer BlueWallet scheme if present
-          scheme = "BlueWallet" if "BlueWallet" in schemes else schemes[0]
-
-          # write outputs
-          out = os.environ["GITHUB_OUTPUT"]
-          with open(out, "a", encoding="utf-8") as f:
-              f.write(f"container_kind={kind}\n")
-              f.write(f"container_path={path}\n")
-              f.write(f"scheme={scheme}\n")
-
-          print(f"Selected: {kind}={path}, scheme={scheme}")
-          PY
-
-      - name: Build archive (NO signing, stable output)
-        shell: bash
-        run: |
-          set -euxo pipefail
-
-          KIND="${{ steps.detect.outputs.container_kind }}"
-          CONTAINER="${{ steps.detect.outputs.container_path }}"
-          SCHEME="${{ steps.detect.outputs.scheme }}"
+          test -d ios/BlueWallet.xcworkspace
 
           mkdir -p build
           DERIVED="build/DerivedData"
-          ARCHIVE_PATH="build/Unsigned.xcarchive"
+          ARCHIVE_PATH="build/BlueWallet-Unsigned.xcarchive"
           LOG="build/xcodebuild.log"
 
-          if [ "$KIND" = "workspace" ]; then
-            CONTAINER_ARGS=(-workspace "$CONTAINER")
-          else
-            CONTAINER_ARGS=(-project "$CONTAINER")
-          fi
-
-          # archive 比 build 更稳定（产物路径固定在 xcarchive 里）
           set +e
           xcodebuild \
-            "${CONTAINER_ARGS[@]}" \
-            -scheme "$SCHEME" \
+            -workspace ios/BlueWallet.xcworkspace \
+            -scheme BlueWallet \
             -configuration Release \
             -sdk iphoneos \
             -destination "generic/platform=iOS" \
             -derivedDataPath "$DERIVED" \
             -archivePath "$ARCHIVE_PATH" \
-            ENABLE_BITCODE=NO \
             SKIP_INSTALL=NO \
+            ENABLE_BITCODE=NO \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
@@ -225,37 +185,24 @@ jobs:
             PROVISIONING_PROFILE_SPECIFIER="" \
             CODE_SIGN_STYLE=Manual \
             archive | tee "$LOG"
-          XCB_RET=${PIPESTATUS[0]}
+          RET=${PIPESTATUS[0]}
           set -e
+          exit $RET
 
-          if [ $XCB_RET -ne 0 ]; then
-            echo "xcodebuild failed with $XCB_RET"
-            exit $XCB_RET
-          fi
-
-          echo "Archive created at: $ARCHIVE_PATH"
-          ls -lah build
-
-      - name: Package unsigned .ipa (Payload/*.app from xcarchive)
+      - name: Package unsigned IPA (Payload/*.app)
         shell: bash
         run: |
           set -euxo pipefail
 
-          ARCHIVE_PATH="build/Unsigned.xcarchive"
-          if [ ! -d "$ARCHIVE_PATH" ]; then
-            echo "Archive not found: $ARCHIVE_PATH"
-            ls -lah build
-            exit 1
-          fi
+          ARCHIVE_PATH="build/BlueWallet-Unsigned.xcarchive"
+          test -d "$ARCHIVE_PATH"
 
           APP_DIR="$(find "$ARCHIVE_PATH/Products/Applications" -maxdepth 1 -type d -name '*.app' | head -n 1 || true)"
           if [ -z "$APP_DIR" ] || [ ! -d "$APP_DIR" ]; then
-            echo "No .app found in archive Applications directory."
-            find "$ARCHIVE_PATH" -maxdepth 4 -type d -name "*.app" -print || true
+            echo "No .app found in xcarchive"
+            find "$ARCHIVE_PATH" -maxdepth 5 -type d -name "*.app" -print || true
             exit 1
           fi
-
-          echo "APP_DIR=$APP_DIR"
 
           rm -rf Payload
           mkdir -p Payload
@@ -264,18 +211,16 @@ jobs:
           IPA="bluewallet-unsigned.ipa"
           rm -f "$IPA"
           /usr/bin/zip -qry "$IPA" Payload
-
-          echo "Created: $IPA"
           ls -lah "$IPA"
 
-      - name: Upload IPA artifact
+      - name: Upload unsigned IPA
         uses: actions/upload-artifact@v4
         with:
           name: bluewallet-ios-unsigned-ipa
           path: bluewallet-unsigned.ipa
           if-no-files-found: error
 
-      - name: Upload build logs (always)
+      - name: Upload logs (always)
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -283,5 +228,4 @@ jobs:
           path: |
             build/xcodebuild.log
             build/DerivedData/Logs/**/*
-            build/Unsigned.xcarchive/**/*
           if-no-files-found: ignore
